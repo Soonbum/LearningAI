@@ -262,8 +262,63 @@
 
 <img width="761" height="613" alt="image" src="https://github.com/user-attachments/assets/fd6fdd52-bd0a-479f-8cd2-218beb5176d9" />
 
+* 이 코드를 직접 짜서 학습시키면 훌륭한 분류기가 탄생하지만, 수만 장의 동물 사진을 수집하고 GPU를 며칠씩 돌려야 하는 한계가 있습니다.
+  - 그래서 실무에서는 바닥부터 학습시키지 않고, 구글이나 메타가 이미 수백만 장의 사진으로 학습시켜 둔 똑똑한 모델(ResNet, VGG 등)을 가져와서 '내 데이터'만 살짝 추가로 얹어서 학습시킵니다.
 
-## 기존 모델에 나만의 지식 확장시키기 1: 파인튜닝 (Fine-Tuning) (LoRA 등 가벼운 파인튜닝 기법으로 텍스트/이미지 모델의 가중치 업데이트해 보기)
+
+## 기존 모델에 나만의 지식 확장시키기 1: 파인튜닝 (Fine-Tuning)
+
+* 일례로 애니메이션 일러스트 생성 모델(예: Stable Diffusion)을 내 입맛대로 개조할 수 있음
+  - LoRA (Low-Rank Adaptation) 기술을 이용하여 거대한 모델을 일반적인 데스크톱 환경에서 학습시킬 수 있게 되었습니다.
+  - LoRA가 필요한 이유: 기존의 전통적인 파인튜닝(Full Fine-Tuning)은 새로운 개념을 가르치기 위해 이 수십억 개의 파라미터에 대해 모두 역전파(Backpropagation)를 수행하고 미분값을 업데이트해야 했습니다. 이 과정은 막대한 GPU VRAM(보통 24GB 이상)을 요구합니다.
+  - 작동 원리: 거대한 원본 모델을 'Read-Only Memory (읽기 전용)'로 동결(Freeze)시켜 버리는 것입니다. 그리고 그 옆에 아주 작은 크기의 '패치(Patch) 메모리'만 새로 할당하여, 런타임에 원본의 결과값에 패치값을 더해주는(Bypass) 방식으로 결과를 가로채어 수정합니다.
+
+* 실전 애니메이션 LoRA 제작 파이프라인
+  - Step 1: 데이터셋 아카이빙 (수집 및 정제)
+    * gallery-dl이나 크롤링 스크립트를 이용해 목표로 하는 화풍이나 캐릭터 디자인과 유사한 애니메이션 일러스트를 20~50장 정도 로컬에 수집합니다.
+    * 이미지 크기를 모델에 맞게 (예: 512x512 또는 1024x1024) 크롭합니다.
+  - Step 2: 캡셔닝 (정답지 만들기)
+    * 각 이미지에 대해 AI가 이해할 수 있는 텍스트 태그(Booru tags)를 달아줍니다.
+    * 예: 1girl, solo, green hair, bird motif, yellow eyes, white background
+  - Step 3: PyTorch에서의 LoRA 학습 (개념적 코드)
+    * 앞서 3단계 커리큘럼에서 보셨던 모델 구조에 LoRA 행렬을 주입하는 과정입니다.
+      ```python
+      import torch
+      import torch.nn as nn
+
+      # 1. 거대한 원본 모델 (예: Stable Diffusion의 특정 레이어)
+      class OriginalLayer(nn.Module):
+          def __init__(self):
+              super().__init__()
+              self.weight = nn.Linear(4096, 4096)
+        
+          def forward(self, x):
+              return self.weight(x)
+
+      # 2. LoRA를 덧붙인 레이어
+      class LoRALayer(nn.Module):
+          def __init__(self, original_layer, rank=4):
+              super().__init__()
+              self.original = original_layer
+        
+              # 원본은 더 이상 미분(학습)하지 않도록 동결(Freeze)
+              for param in self.original.parameters():
+                  param.requires_grad = False
+            
+              # 작은 패치 행렬 A와 B 생성 (이 녀석들만 학습됩니다)
+              self.lora_A = nn.Linear(4096, rank, bias=False)
+              self.lora_B = nn.Linear(rank, 4096, bias=False)
+        
+          def forward(self, x):
+              # 원본 결과값 + (데이터가 A를 거치고 B를 거친 패치 결과값)
+              return self.original(x) + self.lora_B(self.lora_A(x))
+      ```
+  - Step 4: 인퍼런스 (합체 및 사용)
+    * 학습이 끝나면 수십 MB 크기의 아주 가벼운 *.safetensors 파일(LoRA 가중치) 하나만 쏙 떨어집니다.
+    * 나중에 그림을 그릴 때, 수 GB짜리 원본 애니메이션 모델을 램에 올리고 그 위에 이 수십 MB짜리 패치 파일을 '덮어쓰기(Merge)'해서 이미지를 생성하게 됩니다.
+    * 이렇게 핵심적인 수학 트릭 하나로 일반 유저들도 집에서 모델을 튜닝할 수 있게 된 것입니다.
+
+* 실제로 애니메이션 LoRA를 만들 때, 이 PyTorch 코드를 바닥부터 다 짜지는 않고 보통 `Kohya_ss` 같은 최적화된 오픈소스 GUI 툴을 많이 사용합니다.
 
 
 ## 기존 모델에 나만의 지식 확장시키기 2: RAG (검색 증강 생성) (파인튜닝 없이 외부 데이터를 AI에게 참조시키는 방법 학습)
