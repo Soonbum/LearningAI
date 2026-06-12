@@ -178,7 +178,91 @@
       * 개발자는 이 `forward()` 함수만 잘 짜두면 됩니다. 앞서 설명한 `Autograd` 마법 덕분에, 역전파를 위한 `backward()` 함수는 PyTorch가 알아서 생성해 주기 때문입니다.
 
 
-## PyTorch를 이용해 간단한 딥러닝 모델 구축해보기 (OpenCV 경험을 살려 CNN으로 이미지 분류기부터 만들어보시는 것을 강력히 추천합니다.)
+## PyTorch를 이용해 간단한 딥러닝 모델 구축해보기
+
+* 동물 사진 분류 파이프라인
+  - 1단계: 폴더 구조만으로 정답(Label) 자동 지정하기
+    ```
+    # 내가 준비한 하드디스크의 폴더 구조
+    dataset/
+    ├── dog/
+    │   ├── dog1.jpg
+    │   └── dog2.jpg
+    ├── cat/
+    │   ├── cat1.jpg
+    │   └── cat2.jpg
+    └── bird/
+        ├── bird1.jpg
+        └── bird2.jpg
+    ```
+    ```python
+    import torch
+    from torchvision import datasets, transforms
+    from torch.utils.data import DataLoader
+
+    # 1. 이미지 전처리: 모든 동물의 사진 크기가 다르므로 224x224로 통일하고 텐서로 변환
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # 색상 정규화
+    ])
+
+    # 2. 데이터 로드: 폴더 경로만 주면 알아서 dog=0, cat=1, bird=2로 라벨링 완료!
+    animal_dataset = datasets.ImageFolder(root='./dataset', transform=transform)
+
+    # 3. GPU로 올릴 준비 (한 번에 32장씩 묶어서 처리)
+    animal_loader = DataLoader(animal_dataset, batch_size=32, shuffle=True)
+    ```
+  - 2단계: 동물 분류용 CNN 아키텍처 설계
+    * 동물의 털 질감, 귀의 모양, 눈의 위치 같은 복잡한 특징을 잡아내기 위해 여러 겹의 합성곱(Conv) 층을 쌓습니다.
+      ```python
+      import torch.nn as nn
+      import torch.nn.functional as F
+
+      class AnimalClassifier(nn.Module):
+          def __init__(self):
+              super().__init__()
+              # 특징 추출기 (Conv Layers)
+              self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1) # 3채널(RGB) 입력
+              self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+              self.pool = nn.MaxPool2d(2, 2)
+        
+              # 분류기 (Fully Connected Layers)
+              # 224x224 이미지가 두 번의 풀링(반투막)을 거치면 56x56이 됨
+              self.fc1 = nn.Linear(64 * 56 * 56, 512)
+              self.fc2 = nn.Linear(512, 3) # 최종 출력: 개, 고양이, 새 (3가지)
+
+          def forward(self, x):
+              # 1. 특징 추출: 이미지에서 선 -> 형태 -> 귀/눈 등 구체적 패턴을 찾음
+              x = self.pool(F.relu(self.conv1(x)))
+              x = self.pool(F.relu(self.conv2(x)))
+        
+              # 2. 1차원 배열로 평탄화
+              x = torch.flatten(x, 1)
+        
+              # 3. 최종 분류
+              x = F.relu(self.fc1(x))
+              x = self.fc2(x)
+              return x
+
+      model = AnimalClassifier()
+      ```
+  - 3단계: 결과 확인 (Softmax 함수)
+    * 모델에 동물 사진을 넣으면 [12.5, -3.2, 1.1] 같은 해석하기 힘든 숫자들이 나옵니다.
+    * 이를 우리가 이해할 수 있는 확률(%)로 바꿔주는 것이 바로 소프트맥스(Softmax)라는 마법의 함수입니다.
+      ```python
+      # 가상의 고양이 사진 1장을 모델에 입력했다고 가정
+      image = torch.randn(1, 3, 224, 224) 
+      raw_output = model(image) # 예: tensor([[-2.1, 5.3, 0.4]]) 
+
+      # Softmax 함수 적용: 모든 값의 합이 1(100%)이 되도록 변환
+      probabilities = F.softmax(raw_output, dim=1)
+
+      print(probabilities) 
+      # 출력 예시: tensor([[0.01, 0.95, 0.04]]) -> [개 1%, 고양이 95%, 새 4%]
+      ```
+
+<img width="761" height="613" alt="image" src="https://github.com/user-attachments/assets/fd6fdd52-bd0a-479f-8cd2-218beb5176d9" />
 
 
 ## 머신러닝/딥러닝 핵심 원리 직접 구현해 보기 (C++이나 Python의 순수 행렬 연산만으로 아주 간단한 신경망의 '순전파/역전파'를 짜보면 알고리즘적 호기심이 완벽히 채워집니다.)
